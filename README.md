@@ -1,11 +1,12 @@
 # Hackintosh OLED Display Fix — WhateverXe Tiger Lake eDP Builder
 
-Builds a custom **WhateverXe 0.8.2** kext with two community patches:
+Builds a custom **WhateverXe 0.8.2** kext with three community patches (02, 03 and the OLED DPCD/nits patch 05):
 
 - `02-tgl-edp-keep-softsleep.patch` — keeps the firmware-trained Tiger Lake eDP link and adds the soft display-sleep behaviour described by the patch author.
 - `03-redmibook-bpc-backlight.patch` — applies the RedmiBook BPC/backlight changes intended to address incorrect panel colour depth / backlight behaviour.
+- `05-tgl-dpcd-backlight.patch` — adds the OLED eDP AUX/DPCD brightness-in-nits path described below.
 
-The script downloads the patches from the original RedmiBook project at build time, verifies that both apply cleanly, builds the kext, and copies the result to:
+The script downloads patches 02 and 03 from the original RedmiBook project and patch 05 from this repository at build time, verifies that they apply cleanly, builds the kext, and copies the result to:
 
 ```text
 ~/WhateverXe_bpc.kext
@@ -50,13 +51,13 @@ chmod +x build_whateverxe_edp.sh
 ./build_whateverxe_edp.sh
 ```
 
-The script builds WhateverXe 0.8.2 from source and writes the patched kext to `~/WhateverXe_bpc.kext`.
+The script builds WhateverXe 0.8.2 from source and writes the patched kext to `~/WhateverXe_nits.kext`.
 
 ## Install the built kext
 
 1. Back up your current EFI folder.
 2. Mount the EFI partition you actually boot from.
-3. Replace `EFI/OC/Kexts/WhateverXe.kext` with the generated `~/WhateverXe_bpc.kext`.
+3. Replace `EFI/OC/Kexts/WhateverXe.kext` with the generated `~/WhateverXe_nits.kext`.
 4. Check the kext entry and ordering in `config.plist` (WhateverXe must load after Lilu).
 5. Reset NVRAM from the OpenCore picker and reboot.
 
@@ -114,3 +115,31 @@ Also inspect the EFI for personal identifiers, device-specific files, and other 
 ## Disclaimer
 
 Use at your own risk. Keep a known-good EFI backup. A failed graphics configuration can leave the internal screen black; know how to boot from your recovery USB and restore the previous kext.
+
+## Update: brightness on the OLED panel + Fn keys (K513EA, macOS 15.8.3)
+
+### Why the slider did nothing with HDR off
+The panel is an Intel HDR-TCON OLED. The PWM block is unused (`0xC8254` period = 0), and the standard eDP DPCD brightness register (`0x722`) is ignored. Brightness is set in nits at DPCD `0x354/0x355` (4-byte write, same as Linux i915), with `0x344` bit 4 set.
+
+### Build the kext with the brightness patch (05)
+```bash
+bash build_whateverxe_edp_nits.sh      # -> ~/WhateverXe_nits.kext
+```
+Add the boot-arg `-wex-tgl-dpcd-bl`. Working boot-args:
+```text
+-v keepsyms=1 -allow3d -disablegfxfirmware -vi2c-force-polling -wexbeta -wex-tgl-edp-keep -wex-tgl-edp-softsleep -wex-tgl-dpcd-bl
+```
+Check: `ioreg -l -w0 | grep TGLDPCDBL` (the second block of `TGLDPCDBLDump` shows the nits value).
+
+### Fn keys (ASUS EC queries)
+- Fn+F4 / F5 = brightness down / up, Fn+F7 = keyboard backlight (off, 1, 2, 3, off).
+- `python3 acpi/patch_dsdt_fn.py DSDT.aml` renames `_Q0C.._Q0F` to `XQ0C..XQ0F` in your own DSDT (writes `DSDT_fn.aml`, keep the original).
+- Compile `acpi/SSDT-ASUS-FN.dsl` with `iasl`, put the `.aml` in `EFI/OC/ACPI/` and in `config.plist`.
+- OpenCore `ACPI/Patch` rename entries did not apply on this board, hence the direct DSDT rename.
+- Fn+F8/F9/F11 (Cmd+P, Cmd+L, Cmd+Shift+S) are sent by the keyboard itself; Fn+F6/F10/F12 have no macOS action.
+
+### Other settings that helped
+- `Misc/Debug/Target = 0`, `AppleDebug = false` and a restricted `Misc/Security/ScanPolicy` (`2622723` = APFS + ESP + NVMe + USB): OpenCore picker opens in ~1 s instead of ~30 s.
+- GPU usage shows 0 % in monitoring apps (driver does not report counters); Metal / OpenCL still run on the GPU.
+- HDR on: colours fade and max brightness drops (EDR on top of the panel nits). Keep HDR off.
+
